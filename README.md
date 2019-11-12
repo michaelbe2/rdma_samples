@@ -11,4 +11,7 @@ rc_write_latency - this sample implements RDMA write from server to client and m
                    At the end, the server prints the min, max and average latency of RDMA Write operations
                    This sample supports Ethernet interface only
                    
+                   Build in default mode (no latency measure): "make" or "make PRINT_LAT=0"
+                   Build in print latency mode: "make PRINT_LAT=1"
+                   
 TODO
