@@ -1163,8 +1163,7 @@ int modify_source_qps_to_rtr_and_rts(struct rdma_device *rdma_dev, int qps)
             fprintf(stderr, "Failed to modify QP %d to RTS\n", i);
             return 1;
         }
-        LOG_DEBUG("ibv_modify_qp qps[%d] to RTS completed\n",
-                  i, rdma_dev->qps[i]->qp_num, rdma_dev->rem_qpns[i]);
+        LOG_DEBUG("ibv_modify_qp qps[%d] to RTS completed\n", i);
     }
     LOG_INIT("Modify %d QPs to RTS completed\n", qps);
     
