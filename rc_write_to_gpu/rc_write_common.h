@@ -37,8 +37,9 @@
 extern "C" {
 #endif
 
-/*                                       addr             size     rkey     qpn    gid */
-#define EXCHANGE_STRING_LENGTH  (sizeof "0102030405060708:01020304:01020304:010203:0102030405060708090a0b0c0d0e0f10")
+/*                                       addr             size     rkey     gpu_addr         gpu_rkey qpn    gid */
+#define EXCHANGE_STRING_LENGTH  (sizeof "0102030405060708:01020304:01020304:0102030405060708:01020304:010203:0102030405060708090a0b0c0d0e0f10")
+#define EXCHANGE_STRING_NO_GID_LENGTH  (sizeof "0102030405060708:01020304:01020304:0102030405060708:01020304:010203")
 
 /*
  * rdma_device object holds the RDMA resources of the local RDMA device,
@@ -49,11 +50,11 @@ struct rdma_device;
 struct rdma_device *rdma_open_device_target(struct sockaddr *addr); /* client */
 struct rdma_device *rdma_open_device_source(struct sockaddr *addr); /* server */
 void rdma_close_device(struct rdma_device *rdma_dev);
-int rdma_buffer_reg(struct rdma_device *rdma_dev, size_t length);
-void rdma_buffer_dereg(struct rdma_device *rdma_dev);
+int rdma_buffer_reg(struct rdma_device *rdma_dev, size_t length, int use_cuda, const char *bdf);
+void rdma_buffer_dereg(struct rdma_device *rdma_dev, int use_cuda);
 int fill_exchange_string(struct rdma_device *rdma_dev, char *exch_string, size_t length);
 int parse_exchange_string(struct rdma_device *rdma_dev, char *exch_string);
-int rdma_write_to_peer(struct rdma_device *rdma_dev, uint64_t wr_id);
+int rdma_write_to_peer(struct rdma_device *rdma_dev, uint64_t wr_id, int to_gpu);
 int rdma_poll_completions(struct rdma_device *rdma_dev);
 
 int modify_target_qp_to_rtr(struct rdma_device *rdma_dev);

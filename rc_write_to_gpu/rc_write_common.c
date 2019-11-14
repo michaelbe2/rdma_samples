@@ -60,11 +60,24 @@ int debug_enable = 0;
 #define MAX_SEND_SGE        8
 #define TC_PRIO             3
 
-struct wr_latency {
+struct wr_ts_data {
     uint64_t    wr_start_ts;
     uint64_t    wr_after_ts;
     uint64_t    completion_ts;
     uint64_t    read_comp_ts;
+};
+
+struct wr_latency_data {
+    uint64_t    measure_index;
+    uint64_t    wr_send_latency_sum;    /*from wr_start_ts*/
+    uint64_t    completion_latency_sum; /*from wr_start_ts*/
+    uint64_t    read_comp_latency_sum;  /*from completion_ts*/
+    uint64_t    min_wr_send_latency;
+    uint64_t    min_completion_latency;
+    uint64_t    min_read_comp_latency;
+    uint64_t    max_wr_send_latency;
+    uint64_t    max_completion_latency;
+    uint64_t    max_read_comp_latency;
 };
 
 struct rdma_device {
@@ -79,8 +92,10 @@ struct rdma_device {
     
     /* Remote side attributes */
     uint32_t    rem_qpn;
-    uint64_t    rem_buf_addr;
-    uint32_t    rem_buf_rkey;
+    uint64_t    rem_cpu_buf_addr;
+    uint64_t    rem_gpu_buf_addr;
+    uint32_t    rem_cpu_buf_rkey;
+    uint32_t    rem_gpu_buf_rkey;
             /* We don't need rem_buf_size, we use the same
                buf_size for both local and remote sides */
     union ibv_gid       rem_gid;
@@ -92,24 +107,18 @@ struct rdma_device {
     enum ibv_mtu    mtu;
 
     /* Buffer Related fields */
-    void           *buf_addr;   //uint64_t  addr;
+    void           *cpu_buf_addr;   //uint64_t  addr;
+    void           *gpu_buf_addr;   //uint64_t  addr;
     uint32_t        buf_size;
     /* MR Related fields */
-    struct ibv_mr  *mr;
+    struct ibv_mr  *mr_cpu;
+    struct ibv_mr  *mr_gpu;
     
     /* Print Latency Related fields */
     uint64_t            hca_core_clock_kHz;
-    struct wr_latency   latency[LATENCY_ARR_SIZE];
-    uint64_t    measure_index;
-    uint64_t    wr_send_latency_sum;    /*from wr_start_ts*/
-    uint64_t    completion_latency_sum; /*from wr_start_ts*/
-    uint64_t    read_comp_latency_sum;  /*from completion_ts*/
-    uint64_t    min_wr_send_latency;
-    uint64_t    min_completion_latency;
-    uint64_t    min_read_comp_latency;
-    uint64_t    max_wr_send_latency;
-    uint64_t    max_completion_latency;
-    uint64_t    max_read_comp_latency;
+    struct wr_ts_data   ts_data[LATENCY_ARR_SIZE];
+    struct wr_latency_data  w_to_cpu_lat;
+    struct wr_latency_data  w_to_gpu_lat;
 };
 
 
@@ -484,9 +493,13 @@ struct rdma_device *rdma_open_device_source(struct sockaddr *addr) /* server */
     rdma_dev->hca_core_clock_kHz = device_attr_ex.hca_core_clock;
     LOG_INIT("hca_core_clock = %d kHz\n", rdma_dev->hca_core_clock_kHz);
 
-    rdma_dev->min_wr_send_latency    = 0x8FFFFFFFFFFFFFFF;
-    rdma_dev->min_completion_latency = 0x8FFFFFFFFFFFFFFF;
-    rdma_dev->min_read_comp_latency  = 0x8FFFFFFFFFFFFFFF;
+    rdma_dev->w_to_cpu_lat.min_wr_send_latency    = 0x8FFFFFFFFFFFFFFF;
+    rdma_dev->w_to_cpu_lat.min_completion_latency = 0x8FFFFFFFFFFFFFFF;
+    rdma_dev->w_to_cpu_lat.min_read_comp_latency  = 0x8FFFFFFFFFFFFFFF;
+    
+    rdma_dev->w_to_gpu_lat.min_wr_send_latency    = 0x8FFFFFFFFFFFFFFF;
+    rdma_dev->w_to_gpu_lat.min_completion_latency = 0x8FFFFFFFFFFFFFFF;
+    rdma_dev->w_to_gpu_lat.min_read_comp_latency  = 0x8FFFFFFFFFFFFFFF;
     
     return rdma_dev;
 
@@ -520,22 +533,40 @@ void rdma_close_device(struct rdma_device *rdma_dev)
     int ret_val;
 
     /* Print Latancy at the end of run (before destroying device) */
-    if (rdma_dev->measure_index) {
-        LOG_INIT("Print Latency %6lu wr-s:\n", rdma_dev->measure_index);
+    if (rdma_dev->w_to_cpu_lat.measure_index) {
+        LOG_INIT("Print Write to CPU Latency %6lu wr-s:\n", rdma_dev->w_to_cpu_lat.measure_index);
         LOG_INIT("    wr_sent latency   : min %8lu, max %8lu, avg %8lu (nSec)\n",
-                 rdma_dev->min_wr_send_latency * 1000000 / rdma_dev->hca_core_clock_kHz,
-                 rdma_dev->max_wr_send_latency * 1000000 / rdma_dev->hca_core_clock_kHz,
-                 rdma_dev->wr_send_latency_sum / rdma_dev->measure_index * 1000000 / rdma_dev->hca_core_clock_kHz);
+                 rdma_dev->w_to_cpu_lat.min_wr_send_latency * 1000000 / rdma_dev->hca_core_clock_kHz,
+                 rdma_dev->w_to_cpu_lat.max_wr_send_latency * 1000000 / rdma_dev->hca_core_clock_kHz,
+                 rdma_dev->w_to_cpu_lat.wr_send_latency_sum / rdma_dev->w_to_cpu_lat.measure_index * 1000000 / rdma_dev->hca_core_clock_kHz);
 
         LOG_INIT("    completion latency: min %8lu, max %8lu, avg %8lu (nSec)\n",
-                 rdma_dev->min_completion_latency * 1000000 / rdma_dev->hca_core_clock_kHz,
-                 rdma_dev->max_completion_latency * 1000000 / rdma_dev->hca_core_clock_kHz,
-                 rdma_dev->completion_latency_sum / rdma_dev->measure_index * 1000000 / rdma_dev->hca_core_clock_kHz);
+                 rdma_dev->w_to_cpu_lat.min_completion_latency * 1000000 / rdma_dev->hca_core_clock_kHz,
+                 rdma_dev->w_to_cpu_lat.max_completion_latency * 1000000 / rdma_dev->hca_core_clock_kHz,
+                 rdma_dev->w_to_cpu_lat.completion_latency_sum / rdma_dev->w_to_cpu_lat.measure_index * 1000000 / rdma_dev->hca_core_clock_kHz);
 
         LOG_INIT("    read_comp latency : min %8lu, max %8lu, avg %8lu (nSec)\n",
-                 rdma_dev->min_read_comp_latency * 1000000 / rdma_dev->hca_core_clock_kHz,
-                 rdma_dev->max_read_comp_latency * 1000000 / rdma_dev->hca_core_clock_kHz,
-                 rdma_dev->read_comp_latency_sum / rdma_dev->measure_index * 1000000 / rdma_dev->hca_core_clock_kHz);
+                 rdma_dev->w_to_cpu_lat.min_read_comp_latency * 1000000 / rdma_dev->hca_core_clock_kHz,
+                 rdma_dev->w_to_cpu_lat.max_read_comp_latency * 1000000 / rdma_dev->hca_core_clock_kHz,
+                 rdma_dev->w_to_cpu_lat.read_comp_latency_sum / rdma_dev->w_to_cpu_lat.measure_index * 1000000 / rdma_dev->hca_core_clock_kHz);
+        //fflush(stdout);
+    }
+    if (rdma_dev->w_to_gpu_lat.measure_index) {
+        LOG_INIT("Print Write to GPU Latency %6lu wr-s:\n", rdma_dev->w_to_gpu_lat.measure_index);
+        LOG_INIT("    wr_sent latency   : min %8lu, max %8lu, avg %8lu (nSec)\n",
+                 rdma_dev->w_to_gpu_lat.min_wr_send_latency * 1000000 / rdma_dev->hca_core_clock_kHz,
+                 rdma_dev->w_to_gpu_lat.max_wr_send_latency * 1000000 / rdma_dev->hca_core_clock_kHz,
+                 rdma_dev->w_to_gpu_lat.wr_send_latency_sum / rdma_dev->w_to_gpu_lat.measure_index * 1000000 / rdma_dev->hca_core_clock_kHz);
+
+        LOG_INIT("    completion latency: min %8lu, max %8lu, avg %8lu (nSec)\n",
+                 rdma_dev->w_to_gpu_lat.min_completion_latency * 1000000 / rdma_dev->hca_core_clock_kHz,
+                 rdma_dev->w_to_gpu_lat.max_completion_latency * 1000000 / rdma_dev->hca_core_clock_kHz,
+                 rdma_dev->w_to_gpu_lat.completion_latency_sum / rdma_dev->w_to_gpu_lat.measure_index * 1000000 / rdma_dev->hca_core_clock_kHz);
+
+        LOG_INIT("    read_comp latency : min %8lu, max %8lu, avg %8lu (nSec)\n",
+                 rdma_dev->w_to_gpu_lat.min_read_comp_latency * 1000000 / rdma_dev->hca_core_clock_kHz,
+                 rdma_dev->w_to_gpu_lat.max_read_comp_latency * 1000000 / rdma_dev->hca_core_clock_kHz,
+                 rdma_dev->w_to_gpu_lat.read_comp_latency_sum / rdma_dev->w_to_gpu_lat.measure_index * 1000000 / rdma_dev->hca_core_clock_kHz);
         fflush(stdout);
     }
 
@@ -575,14 +606,21 @@ void rdma_close_device(struct rdma_device *rdma_dev)
  * Memory buffer allocation, registration mr
  * Return value: 0 - success, 1 - error
  ****************************************************************************************/
-int rdma_buffer_reg(struct rdma_device *rdma_dev, size_t length)
+int rdma_buffer_reg(struct rdma_device *rdma_dev, size_t length, int use_cuda, const char *bdf)
 {
     struct rdma_buffer *rdma_buff;
     int    ret_val;
 
     /* CPU memory buffer allocation */
-    rdma_dev->buf_addr = work_buffer_alloc(length);
-    if (!rdma_dev->buf_addr) {
+    rdma_dev->cpu_buf_addr = work_buffer_alloc(length, 0, NULL);
+    if (!rdma_dev->cpu_buf_addr) {
+        return 1;
+    }
+    /* GPU memory buffer allocation - TODO*/
+    rdma_dev->gpu_buf_addr = work_buffer_alloc(length, use_cuda, bdf);
+    if (!rdma_dev->gpu_buf_addr) {
+        work_buffer_free(rdma_dev->cpu_buf_addr, 0);
+        rdma_dev->cpu_buf_addr = NULL;
         return 1;
     }
     rdma_dev->buf_size = length;
@@ -591,35 +629,67 @@ int rdma_buffer_reg(struct rdma_device *rdma_dev, size_t length)
                                             IBV_ACCESS_REMOTE_WRITE;
     /*In the case of local buffer we can use IBV_ACCESS_LOCAL_WRITE only flag*/
     LOG_INIT("ibv_reg_mr(pd %p, buf %p, size = %lu, access_flags = 0x%08x\n",
-             rdma_dev->pd, rdma_dev->buf_addr, rdma_dev->buf_size, access_flags);
-    rdma_dev->mr = ibv_reg_mr(rdma_dev->pd, rdma_dev->buf_addr, rdma_dev->buf_size, access_flags);
-    if (!rdma_dev->mr) {
-        fprintf(stderr, "Couldn't register GPU MR\n");
-        free(rdma_dev->buf_addr);
+             rdma_dev->pd, rdma_dev->cpu_buf_addr, rdma_dev->buf_size, access_flags);
+    rdma_dev->mr_cpu = ibv_reg_mr(rdma_dev->pd, rdma_dev->cpu_buf_addr, rdma_dev->buf_size, access_flags);
+    if (!rdma_dev->mr_cpu) {
+        fprintf(stderr, "Couldn't register CPU MR\n");
+        work_buffer_free(rdma_dev->cpu_buf_addr, 0);
+        work_buffer_free(rdma_dev->gpu_buf_addr, use_cuda);
+        rdma_dev->cpu_buf_addr = NULL;
+        rdma_dev->gpu_buf_addr = NULL;
         return 1;
     }
-    LOG_INIT("ibv_reg_mr completed: rkey = 0x%08x\n", rdma_dev->mr->rkey);
+    LOG_INIT("ibv_reg_mr completed for CPU buffer: rkey = 0x%08x\n", rdma_dev->mr_cpu->rkey);
+
+    LOG_INIT("ibv_reg_mr(pd %p, buf %p, size = %lu, access_flags = 0x%08x\n",
+             rdma_dev->pd, rdma_dev->gpu_buf_addr, rdma_dev->buf_size, access_flags);
+    rdma_dev->mr_gpu = ibv_reg_mr(rdma_dev->pd, rdma_dev->gpu_buf_addr, rdma_dev->buf_size, access_flags);
+    if (!rdma_dev->mr_gpu) {
+        fprintf(stderr, "Couldn't register GPU MR\n");
+        ibv_dereg_mr(rdma_dev->mr_cpu);
+        work_buffer_free(rdma_dev->cpu_buf_addr, 0);
+        work_buffer_free(rdma_dev->gpu_buf_addr, use_cuda);
+        rdma_dev->cpu_buf_addr = NULL;
+        rdma_dev->gpu_buf_addr = NULL;
+        return 1;
+    }
+    LOG_INIT("ibv_reg_mr completed for GPU buffer: rkey = 0x%08x\n", rdma_dev->mr_gpu->rkey);
 
     return 0;
 }
 
 //============================================================================================
-void rdma_buffer_dereg(struct rdma_device *rdma_dev)
+void rdma_buffer_dereg(struct rdma_device *rdma_dev, int use_cuda)
 {
     int ret_val;
 
-    LOG_INIT("ibv_dereg_mr(%p)\n", rdma_dev->mr);
-    if (rdma_dev->mr) {
-        ret_val = ibv_dereg_mr(rdma_dev->mr);
+    LOG_INIT("ibv_dereg_mr(%p)\n", rdma_dev->mr_cpu);
+    if (rdma_dev->mr_cpu) {
+        ret_val = ibv_dereg_mr(rdma_dev->mr_cpu);
         if (ret_val) {
             fprintf(stderr, "Couldn't deregister MR, error %d\n", ret_val);
             return;
         }
     }
-    if (rdma_dev->buf_addr) {
-        LOG_INIT("Free memory buffer (%p)\n", rdma_dev->buf_addr);
-        free(rdma_dev->buf_addr);
-        rdma_dev->buf_addr = NULL;
+    if (rdma_dev->cpu_buf_addr) {
+        LOG_INIT("Free memory buffer (%p)\n", rdma_dev->cpu_buf_addr);
+        work_buffer_free(rdma_dev->gpu_buf_addr, 0);
+        free(rdma_dev->cpu_buf_addr);
+        rdma_dev->gpu_buf_addr = NULL;
+    }
+
+    LOG_INIT("ibv_dereg_mr(%p)\n", rdma_dev->mr_gpu);
+    if (rdma_dev->mr_gpu) {
+        ret_val = ibv_dereg_mr(rdma_dev->mr_gpu);
+        if (ret_val) {
+            fprintf(stderr, "Couldn't deregister MR, error %d\n", ret_val);
+            return;
+        }
+    }
+    if (rdma_dev->gpu_buf_addr) {
+        LOG_INIT("Free memory buffer (%p)\n", rdma_dev->gpu_buf_addr);
+        work_buffer_free(rdma_dev->gpu_buf_addr, use_cuda);
+        rdma_dev->gpu_buf_addr = NULL;
     }
 }
 
@@ -655,13 +725,13 @@ int fill_exchange_string(struct rdma_device *rdma_dev, char *exch_string, size_t
                 length, EXCHANGE_STRING_LENGTH );
         return 0;
     }
-    /*       addr             size     rkey     qpn   
-            "0102030405060708:01020304:01020304:010203" */
-    sprintf(exch_string, "%016llx:%08x:%08x:%06x:",
-            (unsigned long long)rdma_dev->buf_addr,
-            rdma_dev->buf_size, rdma_dev->mr->rkey, rdma_dev->qp->qp_num);
+    /*       addr             size     rkey     gpu_addr         gpu_rkey qpn   
+            "0102030405060708:01020304:01020304:0102030405060708:01020304:010203" */
+    sprintf(exch_string, "%016lx:%08x:%08x:%016lx:%08x:%06x:",
+            rdma_dev->cpu_buf_addr, rdma_dev->buf_size, rdma_dev->mr_cpu->rkey,
+            rdma_dev->gpu_buf_addr, rdma_dev->mr_gpu->rkey, rdma_dev->qp->qp_num);
     
-    char *gid_start = exch_string + sizeof "0102030405060708:01020304:01020304:010203";
+    char *gid_start = exch_string + EXCHANGE_STRING_NO_GID_LENGTH;
     
     gid_to_wire_gid(&rdma_dev->gid, gid_start);
 
@@ -676,16 +746,18 @@ int parse_exchange_string(struct rdma_device *rdma_dev, char *exch_string)
 //    unsigned long   rem_buf_size = 0;
     unsigned int    rem_buf_size = 0;
 
-    /*       addr             size     rkey     qpn
-            "0102030405060708:01020304:01020304:010203" */
-    ret_val = sscanf(exch_string, "%lx:%x:%x:%x",
-                     &rdma_dev->rem_buf_addr,
+    /*       addr             size     rkey     gpu_addr         gpu_rkey qpn
+            "0102030405060708:01020304:01020304:0102030405060708:01020304:010203" */
+    ret_val = sscanf(exch_string, "%lx:%x:%x:%x:%lx:%x",
+                     &rdma_dev->rem_cpu_buf_addr,
                      &rem_buf_size,
-                     &rdma_dev->rem_buf_rkey,
+                     &rdma_dev->rem_cpu_buf_rkey,
+                     &rdma_dev->rem_gpu_buf_addr,
+                     &rdma_dev->rem_gpu_buf_rkey,
                      &rdma_dev->rem_qpn);
-    if (ret_val < 4) {
-        fprintf(stderr, "Failed to extract rem_buf_addr, rem_buf_size, rem_buf_rkey and rem_qpn from %s\n",
-                exch_string);
+    if (ret_val < 6) {
+        fprintf(stderr, "Failed to extract rem_cpu/gpu_buf_addr, rem_buf_size, rem_cpu/gpu_buf_rkey and rem_qpn from %s, ret_val %d\n",
+                exch_string, ret_val);
         return 1;
     }
     LOG_DEBUG("rem_buf_size = %u\n", rem_buf_size);
@@ -694,21 +766,21 @@ int parse_exchange_string(struct rdma_device *rdma_dev, char *exch_string)
                  rem_buf_size, rdma_dev->buf_size, rem_buf_size);
         rdma_dev->buf_size = rem_buf_size;
     }
-    char *gid_start = exch_string + sizeof "0102030405060708:01020304:01020304:010203";
+    char *gid_start = exch_string + EXCHANGE_STRING_NO_GID_LENGTH;
     wire_gid_to_gid(gid_start, &rdma_dev->rem_gid);
     
     return 0;
 }
 
 //============================================================================================
-int rdma_write_to_peer(struct rdma_device *rdma_dev, uint64_t wr_id)
+int rdma_write_to_peer(struct rdma_device *rdma_dev, uint64_t wr_id, int to_gpu)
 {
     LOG_DEBUG("rdma_write_to_peer: wr_id = %lu\n", wr_id);
     int    ret_val;
 	struct ibv_sge sg_list = {
-		.addr	= (uint64_t)rdma_dev->buf_addr,
+		.addr	= (uint64_t)rdma_dev->cpu_buf_addr,
 		.length = (uint32_t)rdma_dev->buf_size,
-		.lkey	= rdma_dev->mr->lkey
+		.lkey	= rdma_dev->mr_cpu->lkey
 	};
 	struct ibv_send_wr send_wr = {
 		.wr_id	    = wr_id,
@@ -719,8 +791,8 @@ int rdma_write_to_peer(struct rdma_device *rdma_dev, uint64_t wr_id)
 	};
 	struct ibv_send_wr *bad_wr;
 
-    send_wr.wr.rdma.remote_addr = (uint64_t)(rdma_dev->rem_buf_addr);
-    send_wr.wr.rdma.rkey = (uint32_t)rdma_dev->rem_buf_rkey;
+    send_wr.wr.rdma.remote_addr = to_gpu? rdma_dev->rem_gpu_buf_addr: rdma_dev->rem_cpu_buf_addr;
+    send_wr.wr.rdma.rkey        = to_gpu? rdma_dev->rem_gpu_buf_rkey: rdma_dev->rem_cpu_buf_rkey;
 
     /* Read Start timestamp for latency calculation */
     struct ibv_values_ex ts_values = {
@@ -736,7 +808,7 @@ int rdma_write_to_peer(struct rdma_device *rdma_dev, uint64_t wr_id)
 
     unsigned int latency_idx = (unsigned int)(wr_id & (LATENCY_ARR_SIZE-1));
 
-    rdma_dev->latency[latency_idx].wr_start_ts = ts_values.raw_clock.tv_nsec; /*the value in hca clocks*/
+    rdma_dev->ts_data[latency_idx].wr_start_ts = ts_values.raw_clock.tv_nsec; /*the value in hca clocks*/
     /* --------------------------------------------- */
     
     LOG_DEBUG("rdma_write_to_peer: ibv_post_send: qp_num = %06x, wr_id = %lu, linked send cq = %p\n",
@@ -753,7 +825,7 @@ int rdma_write_to_peer(struct rdma_device *rdma_dev, uint64_t wr_id)
         fprintf(stderr, "ibv_query_rt_values_ex failed after ibv_post_send call\n");
         return 1;
     }
-    rdma_dev->latency[latency_idx].wr_after_ts = ts_values.raw_clock.tv_nsec; /*the value in hca clocks*/
+    rdma_dev->ts_data[latency_idx].wr_after_ts = ts_values.raw_clock.tv_nsec; /*the value in hca clocks*/
     
     return ret_val;
 }
@@ -787,7 +859,7 @@ int rdma_poll_completions(struct rdma_device *rdma_dev)
     
     unsigned int latency_idx = (unsigned int)(rdma_dev->cq_ex->wr_id & (LATENCY_ARR_SIZE-1));
 
-    rdma_dev->latency[latency_idx].completion_ts = ibv_wc_read_completion_ts(rdma_dev->cq_ex);
+    rdma_dev->ts_data[latency_idx].completion_ts = ibv_wc_read_completion_ts(rdma_dev->cq_ex);
     
     struct ibv_values_ex ts_values = {
         .comp_mask = IBV_VALUES_MASK_RAW_CLOCK,
@@ -799,50 +871,91 @@ int rdma_poll_completions(struct rdma_device *rdma_dev)
         fprintf(stderr, "ibv_query_rt_values_ex failed after ibv_wr_start call\n");
         ts_values.raw_clock.tv_nsec = 0;
     }
-    rdma_dev->latency[latency_idx].read_comp_ts = ts_values.raw_clock.tv_nsec;
+    rdma_dev->ts_data[latency_idx].read_comp_ts = ts_values.raw_clock.tv_nsec;
 
-    uint64_t wr_send_latency    = rdma_dev->latency[latency_idx].wr_after_ts   - rdma_dev->latency[latency_idx].wr_start_ts;
-    uint64_t completion_latency = rdma_dev->latency[latency_idx].completion_ts - rdma_dev->latency[latency_idx].wr_start_ts;
-    uint64_t read_comp_latency  = rdma_dev->latency[latency_idx].read_comp_ts  - rdma_dev->latency[latency_idx].completion_ts;
+    uint64_t wr_send_latency    = rdma_dev->ts_data[latency_idx].wr_after_ts   - rdma_dev->ts_data[latency_idx].wr_start_ts;
+    uint64_t completion_latency = rdma_dev->ts_data[latency_idx].completion_ts - rdma_dev->ts_data[latency_idx].wr_start_ts;
+    uint64_t read_comp_latency  = rdma_dev->ts_data[latency_idx].read_comp_ts  - rdma_dev->ts_data[latency_idx].completion_ts;
     
-    rdma_dev->measure_index++;
-    rdma_dev->wr_send_latency_sum    += wr_send_latency;
-    rdma_dev->completion_latency_sum += completion_latency;
-    rdma_dev->read_comp_latency_sum  += read_comp_latency;
+    if ((latency_idx & 0x1) == 0) {
+        /* even wr_id - Write to CPU*/
+        rdma_dev->w_to_cpu_lat.measure_index++;
+        rdma_dev->w_to_cpu_lat.wr_send_latency_sum    += wr_send_latency;
+        rdma_dev->w_to_cpu_lat.completion_latency_sum += completion_latency;
+        rdma_dev->w_to_cpu_lat.read_comp_latency_sum  += read_comp_latency;
 
-    rdma_dev->min_wr_send_latency    = (wr_send_latency < rdma_dev->min_wr_send_latency)?
-                                       wr_send_latency: rdma_dev->min_wr_send_latency;
-    rdma_dev->min_completion_latency = (completion_latency < rdma_dev->min_completion_latency)?
-                                       completion_latency: rdma_dev->min_completion_latency;
-    rdma_dev->min_read_comp_latency  = (read_comp_latency < rdma_dev->min_read_comp_latency)?
-                                       read_comp_latency: rdma_dev->min_read_comp_latency;
-    
-    rdma_dev->max_wr_send_latency    = (wr_send_latency > rdma_dev->max_wr_send_latency)?
-                                       wr_send_latency: rdma_dev->max_wr_send_latency;
-    rdma_dev->max_completion_latency = (completion_latency > rdma_dev->max_completion_latency)?
-                                       completion_latency: rdma_dev->max_completion_latency;
-    rdma_dev->max_read_comp_latency  = (read_comp_latency > rdma_dev->max_read_comp_latency)?
-                                       read_comp_latency: rdma_dev->max_read_comp_latency;
+        rdma_dev->w_to_cpu_lat.min_wr_send_latency    = (wr_send_latency < rdma_dev->w_to_cpu_lat.min_wr_send_latency)?
+                                                        wr_send_latency: rdma_dev->w_to_cpu_lat.min_wr_send_latency;
+        rdma_dev->w_to_cpu_lat.min_completion_latency = (completion_latency < rdma_dev->w_to_cpu_lat.min_completion_latency)?
+                                                        completion_latency: rdma_dev->w_to_cpu_lat.min_completion_latency;
+        rdma_dev->w_to_cpu_lat.min_read_comp_latency  = (read_comp_latency < rdma_dev->w_to_cpu_lat.min_read_comp_latency)?
+                                                        read_comp_latency: rdma_dev->w_to_cpu_lat.min_read_comp_latency;
 
-    LOG_TRACE("Print Latency for wr_id = %6lu\n"
-              "    wr_sent latency   : current %8lu, min %8lu, max %8lu, avg %8lu (nSec)\n",
-              rdma_dev->cq_ex->wr_id,
-              wr_send_latency * 1000000 / rdma_dev->hca_core_clock_kHz,
-              rdma_dev->min_wr_send_latency * 1000000 / rdma_dev->hca_core_clock_kHz,
-              rdma_dev->max_wr_send_latency * 1000000 / rdma_dev->hca_core_clock_kHz,
-              rdma_dev->wr_send_latency_sum / rdma_dev->measure_index * 1000000 / rdma_dev->hca_core_clock_kHz);
+        rdma_dev->w_to_cpu_lat.max_wr_send_latency    = (wr_send_latency > rdma_dev->w_to_cpu_lat.max_wr_send_latency)?
+                                                        wr_send_latency: rdma_dev->w_to_cpu_lat.max_wr_send_latency;
+        rdma_dev->w_to_cpu_lat.max_completion_latency = (completion_latency > rdma_dev->w_to_cpu_lat.max_completion_latency)?
+                                                        completion_latency: rdma_dev->w_to_cpu_lat.max_completion_latency;
+        rdma_dev->w_to_cpu_lat.max_read_comp_latency  = (read_comp_latency > rdma_dev->w_to_cpu_lat.max_read_comp_latency)?
+                                                        read_comp_latency: rdma_dev->w_to_cpu_lat.max_read_comp_latency;
+        LOG_TRACE("Print Latency for wr_id = %6lu\n"
+                  "    wr_sent latency   : current %8lu, min %8lu, max %8lu, avg %8lu (nSec)\n",
+                  rdma_dev->cq_ex->wr_id,
+                  wr_send_latency * 1000000 / rdma_dev->hca_core_clock_kHz,
+                  rdma_dev->w_to_cpu_lat.min_wr_send_latency * 1000000 / rdma_dev->hca_core_clock_kHz,
+                  rdma_dev->w_to_cpu_lat.max_wr_send_latency * 1000000 / rdma_dev->hca_core_clock_kHz,
+                  rdma_dev->w_to_cpu_lat.wr_send_latency_sum / rdma_dev->w_to_cpu_lat.measure_index * 1000000 / rdma_dev->hca_core_clock_kHz);
 
-    LOG_TRACE("    completion latency: current %8lu, min %8lu, max %8lu, avg %8lu (nSec)\n",
-              completion_latency * 1000000 / rdma_dev->hca_core_clock_kHz,
-              rdma_dev->min_completion_latency * 1000000 / rdma_dev->hca_core_clock_kHz,
-              rdma_dev->max_completion_latency * 1000000 / rdma_dev->hca_core_clock_kHz,
-              rdma_dev->completion_latency_sum / rdma_dev->measure_index * 1000000 / rdma_dev->hca_core_clock_kHz);
+        LOG_TRACE("    completion latency: current %8lu, min %8lu, max %8lu, avg %8lu (nSec)\n",
+                  completion_latency * 1000000 / rdma_dev->hca_core_clock_kHz,
+                  rdma_dev->w_to_cpu_lat.min_completion_latency * 1000000 / rdma_dev->hca_core_clock_kHz,
+                  rdma_dev->w_to_cpu_lat.max_completion_latency * 1000000 / rdma_dev->hca_core_clock_kHz,
+                  rdma_dev->w_to_cpu_lat.completion_latency_sum / rdma_dev->w_to_cpu_lat.measure_index * 1000000 / rdma_dev->hca_core_clock_kHz);
 
-    LOG_TRACE("    read_comp latency : current %8lu, min %8lu, max %8lu, avg %8lu (nSec)\n",
-              read_comp_latency * 1000000 / rdma_dev->hca_core_clock_kHz,
-              rdma_dev->min_read_comp_latency * 1000000 / rdma_dev->hca_core_clock_kHz,
-              rdma_dev->max_read_comp_latency * 1000000 / rdma_dev->hca_core_clock_kHz,
-              rdma_dev->read_comp_latency_sum / rdma_dev->measure_index * 1000000 / rdma_dev->hca_core_clock_kHz);
+        LOG_TRACE("    read_comp latency : current %8lu, min %8lu, max %8lu, avg %8lu (nSec)\n",
+                  read_comp_latency * 1000000 / rdma_dev->hca_core_clock_kHz,
+                  rdma_dev->w_to_cpu_lat.min_read_comp_latency * 1000000 / rdma_dev->hca_core_clock_kHz,
+                  rdma_dev->w_to_cpu_lat.max_read_comp_latency * 1000000 / rdma_dev->hca_core_clock_kHz,
+                  rdma_dev->w_to_cpu_lat.read_comp_latency_sum / rdma_dev->w_to_cpu_lat.measure_index * 1000000 / rdma_dev->hca_core_clock_kHz);
+    } else {
+        /* odd wr_id - Write to GPU*/
+        rdma_dev->w_to_gpu_lat.measure_index++;
+        rdma_dev->w_to_gpu_lat.wr_send_latency_sum    += wr_send_latency;
+        rdma_dev->w_to_gpu_lat.completion_latency_sum += completion_latency;
+        rdma_dev->w_to_gpu_lat.read_comp_latency_sum  += read_comp_latency;
+
+        rdma_dev->w_to_gpu_lat.min_wr_send_latency    = (wr_send_latency < rdma_dev->w_to_gpu_lat.min_wr_send_latency)?
+                                                        wr_send_latency: rdma_dev->w_to_gpu_lat.min_wr_send_latency;
+        rdma_dev->w_to_gpu_lat.min_completion_latency = (completion_latency < rdma_dev->w_to_gpu_lat.min_completion_latency)?
+                                                        completion_latency: rdma_dev->w_to_gpu_lat.min_completion_latency;
+        rdma_dev->w_to_gpu_lat.min_read_comp_latency  = (read_comp_latency < rdma_dev->w_to_gpu_lat.min_read_comp_latency)?
+                                                        read_comp_latency: rdma_dev->w_to_gpu_lat.min_read_comp_latency;
+
+        rdma_dev->w_to_gpu_lat.max_wr_send_latency    = (wr_send_latency > rdma_dev->w_to_gpu_lat.max_wr_send_latency)?
+                                                        wr_send_latency: rdma_dev->w_to_gpu_lat.max_wr_send_latency;
+        rdma_dev->w_to_gpu_lat.max_completion_latency = (completion_latency > rdma_dev->w_to_gpu_lat.max_completion_latency)?
+                                                        completion_latency: rdma_dev->w_to_gpu_lat.max_completion_latency;
+        rdma_dev->w_to_gpu_lat.max_read_comp_latency  = (read_comp_latency > rdma_dev->w_to_gpu_lat.max_read_comp_latency)?
+                                                        read_comp_latency: rdma_dev->w_to_gpu_lat.max_read_comp_latency;
+        LOG_TRACE("Print Latency for wr_id = %6lu\n"
+                  "    wr_sent latency   : current %8lu, min %8lu, max %8lu, avg %8lu (nSec)\n",
+                  rdma_dev->cq_ex->wr_id,
+                  wr_send_latency * 1000000 / rdma_dev->hca_core_clock_kHz,
+                  rdma_dev->w_to_gpu_lat.min_wr_send_latency * 1000000 / rdma_dev->hca_core_clock_kHz,
+                  rdma_dev->w_to_gpu_lat.max_wr_send_latency * 1000000 / rdma_dev->hca_core_clock_kHz,
+                  rdma_dev->w_to_gpu_lat.wr_send_latency_sum / rdma_dev->w_to_gpu_lat.measure_index * 1000000 / rdma_dev->hca_core_clock_kHz);
+
+        LOG_TRACE("    completion latency: current %8lu, min %8lu, max %8lu, avg %8lu (nSec)\n",
+                  completion_latency * 1000000 / rdma_dev->hca_core_clock_kHz,
+                  rdma_dev->w_to_gpu_lat.min_completion_latency * 1000000 / rdma_dev->hca_core_clock_kHz,
+                  rdma_dev->w_to_gpu_lat.max_completion_latency * 1000000 / rdma_dev->hca_core_clock_kHz,
+                  rdma_dev->w_to_gpu_lat.completion_latency_sum / rdma_dev->w_to_gpu_lat.measure_index * 1000000 / rdma_dev->hca_core_clock_kHz);
+
+        LOG_TRACE("    read_comp latency : current %8lu, min %8lu, max %8lu, avg %8lu (nSec)\n",
+                  read_comp_latency * 1000000 / rdma_dev->hca_core_clock_kHz,
+                  rdma_dev->w_to_gpu_lat.min_read_comp_latency * 1000000 / rdma_dev->hca_core_clock_kHz,
+                  rdma_dev->w_to_gpu_lat.max_read_comp_latency * 1000000 / rdma_dev->hca_core_clock_kHz,
+                  rdma_dev->w_to_gpu_lat.read_comp_latency_sum / rdma_dev->w_to_gpu_lat.measure_index * 1000000 / rdma_dev->hca_core_clock_kHz);
+    }
 
     /* ret_val = ibv_next_poll(rdma_dev->cq); - we don't need next_poll, just one completion expected */
     

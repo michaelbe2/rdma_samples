@@ -2,13 +2,14 @@ IDIR = .
 CC = gcc
 ODIR = obj
 
-PRE_CFLAGS1 = -I$(IDIR) -g
-LIBS = -Wall -lrdmacm -libverbs
-
-ifeq ($(PRINT_LAT),1)
-  CFLAGS = $(PRE_CFLAGS1) -DPRINT_LATENCY
+ifeq ($(USE_CUDA),1)
+  CUDAFLAGS = -I/usr/local/cuda-10.1/targets/x86_64-linux/include
+  CUDAFLAGS += -I/usr/local/cuda/include
+  CFLAGS = -I$(IDIR) $(CUDAFLAGS) -g -DHAVE_CUDA
+  LIBS = -Wall -lrdmacm -libverbs -lcuda
 else
-  CFLAGS = $(PRE_CFLAGS1)
+  CFLAGS = -I$(IDIR) -g
+  LIBS = -Wall -lrdmacm -libverbs
 endif
 
 OEXE_CLT = rc_write_client

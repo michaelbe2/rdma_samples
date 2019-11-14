@@ -277,7 +277,7 @@ int main(int argc, char *argv[])
     }
     
     /* Memorty allocation and MR registration */
-    ret_val = rdma_buffer_reg(rdma_dev, usr_par.size);
+    ret_val = rdma_buffer_reg(rdma_dev, usr_par.size, 0, NULL);
     if (ret_val) {
         ret_val = 1;
         goto clean_device;
@@ -321,9 +321,25 @@ int main(int argc, char *argv[])
     uint64_t    wr_id = 0;
     
     for (it_cnt = 0; it_cnt < usr_par.iters; it_cnt++) {
-        wr_id++;
-        LOG_TRACE("Single write data to peer\n");
-        ret_val = rdma_write_to_peer(rdma_dev, wr_id);
+        
+        wr_id += 2; /* even wr_id goes to CPU and odd to GPU*/
+
+        int to_gpu = 0; /*FALSE*/
+        LOG_TRACE("Single write data to CPU peer\n");
+        ret_val = rdma_write_to_peer(rdma_dev, wr_id, to_gpu);
+        if (ret_val) {
+            goto clean_rdma_buff;
+        }
+        LOG_TRACE("Polling completion queue\n");
+        ret_val = rdma_poll_completions(rdma_dev);
+        if (ret_val) {
+            goto clean_rdma_buff;
+        }
+        LOG_TRACE("Finished polling\n");
+        
+        to_gpu = 1; /*TRUE*/
+        LOG_TRACE("Single write data to GPU peer\n");
+        ret_val = rdma_write_to_peer(rdma_dev, wr_id+1, to_gpu);
         if (ret_val) {
             goto clean_rdma_buff;
         }
@@ -352,7 +368,7 @@ int main(int argc, char *argv[])
     }
 
 clean_rdma_buff:
-    rdma_buffer_dereg(rdma_dev);
+    rdma_buffer_dereg(rdma_dev, 0);
 
 clean_device:
     rdma_close_device(rdma_dev);

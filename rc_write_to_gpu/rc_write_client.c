@@ -50,6 +50,8 @@ struct user_params {
 
     int                 port;
     unsigned long       size;
+    int                 use_cuda;
+    char               *bdf;
     char               *servername;
     struct sockaddr     hostaddr;
 };
@@ -157,6 +159,8 @@ static void usage(const char *argv0)
     printf("  -a, --addr=<ipaddr>       ip address of the local host net device <ipaddr v4> (mandatory)\n");
     printf("  -p, --port=<port>         listen on/connect to port <port> (default 18515)\n");
     printf("  -s, --size=<size>         size of message to exchange (default 1024)\n");
+    printf("  -u, --use-cuda=<BDF>      use CUDA pacage (work with GPU memoty),\n"
+           "                            BDF corresponding to CUDA device, for example, \"3e:02.0\"\n");
     printf("  -L, --Log-mask=<mask>     Log bitmask: bit 0 - init log enable,\n"
            "                                         bit 1 - trace log enable,\n"
            "                                         bit 2 - debug log enable\n");
@@ -176,11 +180,12 @@ static int parse_command_line(int argc, char *argv[], struct user_params *usr_pa
             { .name = "addr",          .has_arg = 1, .val = 'a' },
             { .name = "port",          .has_arg = 1, .val = 'p' },
             { .name = "size",          .has_arg = 1, .val = 's' },
+            { .name = "use-cuda",      .has_arg = 1, .val = 'u' },
             { .name = "debug-mask",    .has_arg = 1, .val = 'L' },
             { 0 }
         };
 
-        c = getopt_long(argc, argv, "a:p:s:L:",
+        c = getopt_long(argc, argv, "a:p:s:u:L:",
                         long_options, NULL);
         if (c == -1)
             break;
@@ -203,6 +208,16 @@ static int parse_command_line(int argc, char *argv[], struct user_params *usr_pa
             usr_par->size = strtol(optarg, NULL, 0);
             break;
 
+        case 'u':
+            usr_par->use_cuda = 1;
+            usr_par->bdf = calloc(1, strlen(optarg)+1);
+            if (!usr_par->bdf){
+                fprintf(stderr, "FAILURE: BDF mem alloc failure (errno=%d '%m')", errno);
+                return 1;
+            }
+            strcpy(usr_par->bdf, optarg);
+            break;
+        
         case 'L':
             init_enable  = (strtol(optarg, NULL, 0) >> 0) & 1; /*bit 0*/;
             trace_enable = (strtol(optarg, NULL, 0) >> 1) & 1; /*bit 1*/;
@@ -255,7 +270,10 @@ int main(int argc, char *argv[])
 
     ret_val = parse_command_line(argc, argv, &usr_par);
     if (ret_val) {
-        return 1;
+        ret_val = 1;
+        /* We don't exit here, because when parse_command_line failed, probably
+           some of memory allocations were completed, so we need to free them */
+        goto clean_usr_par;
     }
     
     printf("Connecting to remote server \"%s:%d\"\n", usr_par.servername, usr_par.port);
@@ -263,7 +281,8 @@ int main(int argc, char *argv[])
     free(usr_par.servername);
 
     if (sockfd < 0) {
-        return 1;
+        ret_val = 1;
+        goto clean_usr_par;
     }
 
     printf("Opening rdma device\n");
@@ -274,10 +293,15 @@ int main(int argc, char *argv[])
     }
     
     /* Memorty allocation and MR registration */
-    ret_val = rdma_buffer_reg(rdma_dev, usr_par.size);
+    ret_val = rdma_buffer_reg(rdma_dev, usr_par.size, usr_par.use_cuda, usr_par.bdf);
     if (ret_val) {
         ret_val = 1;
         goto clean_device;
+    }
+    /* We don't need bdf any more, sio we can free this. */
+    if (usr_par.bdf) {
+        free(usr_par.bdf);
+        usr_par.bdf = NULL;
     }
 
     ret_val = client_data_exchange(rdma_dev, sockfd);
@@ -326,7 +350,7 @@ int main(int argc, char *argv[])
     }
 
 clean_rdma_buff:
-    rdma_buffer_dereg(rdma_dev);
+    rdma_buffer_dereg(rdma_dev, usr_par.use_cuda);
 
 clean_device:
     rdma_close_device(rdma_dev);
@@ -334,6 +358,11 @@ clean_device:
 clean_socket:
     close(sockfd);
 
+clean_usr_par:
+    if (usr_par.bdf) {
+        free(usr_par.bdf);
+    }
+    
     return ret_val;
 }
 

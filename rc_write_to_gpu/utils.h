@@ -41,7 +41,8 @@ extern int trace_enable;
 extern int debug_enable;
 #endif /*_LOG_ENABLE_VARS_DEFINE*/
 
-void *work_buffer_alloc(size_t length);
+void *work_buffer_alloc(size_t length, int use_cuda, const char *bdf);
+void work_buffer_free(void *buff, int use_cuda);
 
 int convert_addr_string_to_sockaddr(char *addr_string, struct sockaddr *addr);
 
