@@ -152,7 +152,7 @@ static void *init_gpu(size_t gpu_buf_size, const char *bdf)
         return NULL;
     }
 
-    if (debug) {
+    if (debug_enable) {
         print_gpu_devices_info();
     }
     
