@@ -116,10 +116,10 @@ static int open_server_socket(int port)
     return sockfd;
 }
 
-//============================================================================================
-/* Data Format:
- addr             size     rkey     qpn    gid                             
-"0102030405060708:01020304:01020304:010203:0102030405060708090a0b0c0d0e0f10"
+/*============================================================================================
+ Data Format:
+ addr             size     rkey     gpu_addr         gpu_rkey qpn    gid
+"0102030405060708:01020304:01020304:0102030405060708:01020304:010203:0102030405060708090a0b0c0d0e0f10"
 */
 static int server_data_exchange(struct rdma_device *rdma_dev, int sockfd)
 {

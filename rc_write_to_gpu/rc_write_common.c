@@ -137,13 +137,13 @@ static struct ibv_context *open_ib_device_by_addr(struct rdma_device *rdma_dev, 
 
     ret = rdma_create_id(rdma_dev->cm_channel, &rdma_dev->cm_id, rdma_dev, RDMA_PS_UDP);
     if (ret) {
-        LOG_INIT("rdma_create_id() failure");
+        LOG_INIT("rdma_create_id() failure\n");
         goto out1;
     }
 
     ret = rdma_bind_addr(rdma_dev->cm_id, addr);
     if (ret) {
-        LOG_INIT("rdma_bind_addr() failure");
+        LOG_INIT("rdma_bind_addr() failure\n");
         goto out2;
     }
 
@@ -1061,7 +1061,7 @@ int modify_source_qp_to_rtr_and_rts(struct rdma_device *rdma_dev)
     qp_attr.qp_state      = IBV_QPS_RTS;
     qp_attr.timeout       = 16;
     qp_attr.retry_cnt     = 7;
-    qp_attr.rnr_retry     = 7;
+    qp_attr.rnr_retry     = 6; // MB-Debug 7
     //qp_attr.sq_psn        = 0;
     qp_attr.max_rd_atomic = 1;
 

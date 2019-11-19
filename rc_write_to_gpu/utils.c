@@ -223,7 +223,7 @@ void *work_buffer_alloc(size_t length, int use_cuda, const char *bdf)
 #ifdef HAVE_CUDA
         buff = init_gpu(length, bdf);
 #else
-        fprintf(stderr, "Can't init GPU, HAVE_CUDA mode isn't set");
+        fprintf(stderr, "Can't init GPU, HAVE_CUDA mode isn't set.\n");
 #endif /*HAVE_CUDA*/
         if (!buff) {
             fprintf(stderr, "Couldn't allocate work buffer on GPU.\n");
@@ -252,7 +252,7 @@ void work_buffer_free(void *buff, int use_cuda)
 #ifdef HAVE_CUDA
         free_gpu(buff);
 #else
-        fprintf(stderr, "Can't free GPU, HAVE_CUDA mode isn't set");
+        fprintf(stderr, "Can't free GPU, HAVE_CUDA mode isn't set.\n");
 #endif /*HAVE_CUDA*/
     } else {
         LOG_INIT("free memory buffer(%p)\n", buff);

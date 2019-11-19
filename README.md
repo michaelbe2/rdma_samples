@@ -22,7 +22,7 @@ Samples list:
         For both operations, the latency is measured and printed at the end of run (for Log level "INIT" and higher)
         The client opens socket to the server, exchanges required data including CPU and GPU buffers addresses and access keys.
         After that client sends "start test" command, the server starts test iterations according to the command line
-        parameters and obtained from the client attributes. The test can run with or without CUDA liblary.
+        parameters and obtained from the client attributes. The test can run with or without CUDA library.
         In no CUDA mode, CPU buffer is used instead of GPU one.
         At the end, the server prints the min, max and average latency of RDMA Write operations to both CPU and GPU buffers.
         This sample supports Ethernet interface only
