@@ -748,7 +748,7 @@ int parse_exchange_string(struct rdma_device *rdma_dev, char *exch_string)
 
     /*       addr             size     rkey     gpu_addr         gpu_rkey qpn
             "0102030405060708:01020304:01020304:0102030405060708:01020304:010203" */
-    ret_val = sscanf(exch_string, "%lx:%x:%x:%x:%lx:%x",
+    ret_val = sscanf(exch_string, "%lx:%x:%x:%lx:%x:%x",
                      &rdma_dev->rem_cpu_buf_addr,
                      &rem_buf_size,
                      &rdma_dev->rem_cpu_buf_rkey,
@@ -760,7 +760,8 @@ int parse_exchange_string(struct rdma_device *rdma_dev, char *exch_string)
                 exch_string, ret_val);
         return 1;
     }
-    LOG_DEBUG("rem_buf_size = %u\n", rem_buf_size);
+    LOG_DEBUG("rem_buf_size = %u, rem_cpu_buf_addr = 0x%lx, rem_gpu_buf_addr = 0x%lx\n",
+              rem_buf_size, rdma_dev->rem_cpu_buf_addr, rdma_dev->rem_gpu_buf_addr);
     if (rem_buf_size < rdma_dev->buf_size) {
         LOG_INIT("Remote size %lu < local size %lu, changing the local size to %lu\n",
                  rem_buf_size, rdma_dev->buf_size, rem_buf_size);
