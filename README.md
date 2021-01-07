@@ -28,5 +28,5 @@ Samples list:
         This sample supports Ethernet interface only
         
         Build in default mode (no latency measure): "make" or "make USE_CUDA=0"
-        Build in print latency mode: "make USE_CUDA=1"
+        Build in use Cuda (use GPU) mode: "make USE_CUDA=1"
 
